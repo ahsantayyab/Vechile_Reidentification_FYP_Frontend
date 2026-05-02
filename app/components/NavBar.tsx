@@ -7,6 +7,7 @@ import { useState, useEffect } from "react";
 const links = [
   { href: "/", label: "HOME" },
   { href: "/videos", label: "HISTORY" },
+  { href: "/trajectories", label: "TRAJECTORIES" },
 ];
 
 export function NavBar() {

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useState, useEffect, useRef } from "react";
+import { FormEvent, useState, useEffect, useRef, useCallback } from "react";
 import { uploadVideo } from "../lib/api";
 
 // ── Animated counter ──────────────────────────────────────────────────────────
@@ -44,10 +44,178 @@ function Cursor() {
   return <span className={`inline-block w-[2px] h-[1em] bg-amber-400 align-middle ml-0.5 ${on ? "opacity-100" : "opacity-0"}`} />;
 }
 
+// ── Camera Location Pin Picker (cyber-terminal style) ─────────────────────────
+interface CameraLocation {
+  lat: number;
+  lng: number;
+  name?: string;
+}
+
+function CameraPinPicker({
+  value,
+  onChange,
+}: {
+  value: CameraLocation | null;
+  onChange: (loc: CameraLocation | null) => void;
+}) {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const markerRef = useRef<any>(null);
+  const [mapReady, setMapReady] = useState(false);
+
+  const initMap = useCallback(() => {
+    if (mapInstanceRef.current || !mapRef.current || typeof window === "undefined") return;
+
+    // Clear stale leaflet id from HMR
+    if ((mapRef.current as any)._leaflet_id) {
+      delete (mapRef.current as any)._leaflet_id;
+    }
+
+    // Inject Leaflet CSS once
+    if (!document.getElementById("leaflet-css")) {
+      const link = document.createElement("link");
+      link.id = "leaflet-css";
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+    }
+
+    import("leaflet").then((L) => {
+      if (mapInstanceRef.current || !mapRef.current) return;
+
+      // Default center: Rawalpindi (matching existing default in backend)
+      const map = L.map(mapRef.current, { zoomControl: true }).setView([33.5974, 73.0541], 13);
+
+      L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+        { attribution: "©OpenStreetMap ©CartoDB", maxZoom: 19 }
+      ).addTo(map);
+
+      const cameraIcon = L.divIcon({
+        html: `<div style="
+          position:relative;width:32px;height:42px;
+          filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+        ">
+          <div style="
+            width:28px;height:28px;background:#f59e0b;
+            border:3px solid #fff;border-radius:50% 50% 50% 0;
+            transform:rotate(-45deg);
+          "></div>
+        </div>`,
+        className: "",
+        iconSize: [32, 42],
+        iconAnchor: [16, 42],
+      });
+
+      map.on("click", (e: any) => {
+        const { lat, lng } = e.latlng;
+        if (markerRef.current) {
+          markerRef.current.setLatLng([lat, lng]);
+        } else {
+          markerRef.current = L.marker([lat, lng], { icon: cameraIcon }).addTo(map);
+        }
+        onChange({
+          lat: parseFloat(lat.toFixed(6)),
+          lng: parseFloat(lng.toFixed(6)),
+          name: `Camera @ ${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        });
+      });
+
+      mapInstanceRef.current = map;
+      setMapReady(true);
+    });
+  }, [onChange]);
+
+  // Auto-init map on mount
+  useEffect(() => {
+    const t = setTimeout(initMap, 100);
+    return () => {
+      clearTimeout(t);
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+        markerRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const clearPin = () => {
+    if (markerRef.current && mapInstanceRef.current) {
+      mapInstanceRef.current.removeLayer(markerRef.current);
+      markerRef.current = null;
+    }
+    onChange(null);
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <label className="block font-mono text-[11px] tracking-wider text-slate-500 uppercase">
+          📍 Camera Location
+        </label>
+        {value && (
+          <button
+            type="button"
+            onClick={clearPin}
+            className="font-mono text-[10px] text-rose-400 hover:text-rose-300 transition uppercase tracking-wider"
+          >
+            Clear Pin
+          </button>
+        )}
+      </div>
+
+      {/* Map container with cyber-terminal corners */}
+      <div className="relative">
+        <div
+          ref={mapRef}
+          className="relative h-44 w-full overflow-hidden rounded-lg border border-slate-700 bg-slate-950 cursor-crosshair"
+          style={{ zIndex: 0 }}
+        >
+          {!mapReady && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-700 pointer-events-none font-mono text-[10px]">
+              <div className="h-3 w-3 animate-spin rounded-full border border-amber-400/40 border-t-amber-400" />
+              <span>LOADING MAP...</span>
+            </div>
+          )}
+        </div>
+
+        {/* Corner brackets */}
+        {mapReady && ["top-1 left-1 border-t border-l", "top-1 right-1 border-t border-r", "bottom-1 left-1 border-b border-l", "bottom-1 right-1 border-b border-r"].map((cls) => (
+          <span key={cls} className={`pointer-events-none absolute h-2 w-2 border-amber-500/30 ${cls}`} />
+        ))}
+      </div>
+
+      {/* Coordinate readout */}
+      {value ? (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 font-mono text-[11px]">
+          <span className="text-amber-400">📍</span>
+          <span className="tabular-nums text-amber-300">
+            {value.lat.toFixed(4)}, {value.lng.toFixed(4)}
+          </span>
+          <input
+            type="text"
+            value={value.name || ""}
+            onChange={(e) => onChange({ ...value, name: e.target.value })}
+            placeholder="Label this camera..."
+            maxLength={100}
+            className="ml-auto flex-1 bg-transparent text-right font-mono text-[11px] text-amber-200 placeholder:text-slate-700 outline-none"
+          />
+        </div>
+      ) : (
+        <p className="font-mono text-[10px] text-slate-700 uppercase tracking-wider">
+          Click map to set camera position (optional)
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Upload section ────────────────────────────────────────────────────────────
 function UploadSection() {
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [cameraLocation, setCameraLocation] = useState<CameraLocation | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -62,10 +230,13 @@ function UploadSection() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("title", title || file.name);
+      if (cameraLocation) {
+        formData.append("camera_location", JSON.stringify(cameraLocation));
+      }
       const job = await uploadVideo(formData);
       setMessage(`JOB #${job.id} QUEUED — PROCESSING INITIATED`);
       setLastJobId(job.id);
-      setTitle(""); setFile(null);
+      setTitle(""); setFile(null); setCameraLocation(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed.");
     } finally { setSubmitting(false); }
@@ -153,6 +324,9 @@ function UploadSection() {
               />
             </div>
 
+            {/* ── Camera Location Pin Picker ── */}
+            <CameraPinPicker value={cameraLocation} onChange={setCameraLocation} />
+
             {/* Status readout */}
             <div className="rounded-lg border border-slate-800 bg-slate-950 p-3 font-mono text-[11px] space-y-1">
               <div className="flex justify-between text-slate-600">
@@ -162,9 +336,18 @@ function UploadSection() {
                 <span>FEATURE MODEL</span><span className="text-amber-400/70">TransReID</span>
               </div>
               <div className="flex justify-between text-slate-600">
+                <span>PLATE OCR</span><span className="text-amber-400/70">PlateNet + EasyOCR</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
                 <span>FILE</span>
                 <span className={file ? "text-green-400" : "text-slate-700"}>
                   {file ? "LOADED" : "NONE"}
+                </span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>LOCATION</span>
+                <span className={cameraLocation ? "text-green-400" : "text-slate-700"}>
+                  {cameraLocation ? "PINNED" : "NONE"}
                 </span>
               </div>
             </div>
@@ -216,7 +399,6 @@ function RecentStrip() {
           VIEW ALL →
         </Link>
       </div>
-      {/* Live RecentJobs component renders here */}
       <RecentJobsInline />
     </section>
   );
@@ -230,7 +412,7 @@ function RecentJobsInline() {
   useEffect(() => {
     fetch(`${API}/api/v1/videos?page=1&page_size=4`)
       .then((r) => r.json())
-      .then((d) => setJobs(d.items ?? []))
+      .then((d) => setJobs(d.data ?? d.items ?? []))
       .catch(() => {});
   }, [API]);
 
@@ -271,34 +453,6 @@ function RecentJobsInline() {
   );
 }
 
-
-
-// ── Stats bar ─────────────────────────────────────────────────────────────────
-function StatsBar() {
-  const stats = [
-    { label: "VEHICLES TRACKED", value: 12847, suffix: "+" },
-    { label: "ACCURACY RATE", value: 94, suffix: "%" },
-    { label: "CAMERAS SUPPORTED", value: 20, suffix: "" },
-    { label: "AVG PROCESS TIME", value: 11, suffix: "s" },
-  ];
-  return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      {stats.map(({ label, value, suffix }) => (
-        <div key={label} className="relative overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/50 p-4">
-          <Scanlines />
-          <div className="relative z-10">
-            <div className="font-mono text-2xl font-bold text-slate-50">
-              <Counter to={value} />{suffix}
-            </div>
-            <div className="mt-1 font-mono text-[10px] tracking-wider text-slate-600 uppercase">{label}</div>
-          </div>
-          <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-amber-500/20 to-transparent" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── Hero ──────────────────────────────────────────────────────────────────────
 function Hero() {
   return (
@@ -319,13 +473,11 @@ function Hero() {
       <div className="absolute bottom-0 right-0 h-48 w-64 rounded-full bg-indigo-500/5 blur-3xl" />
 
       <div className="relative z-10 max-w-3xl">
-        {/* Badge */}
         <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-amber-500/20 bg-amber-500/5 px-3 py-1.5">
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
           <span className="font-mono text-[11px] tracking-widest text-amber-400/80 uppercase">System Online</span>
         </div>
 
-        {/* Headline */}
         <h1 className="font-mono text-4xl font-black leading-tight tracking-tight text-slate-50 sm:text-5xl lg:text-6xl">
           VEHICLE
           <br />
@@ -334,8 +486,8 @@ function Hero() {
         </h1>
 
         <p className="mt-5 max-w-xl font-mono text-sm leading-relaxed text-slate-500">
-          Multi-camera vehicle tracking using YOLOv8 detection and TransReID feature extraction.
-          Upload surveillance footage — the system identifies and traces vehicles across camera feeds.
+          Multi-camera vehicle tracking using YOLOv8 detection, TransReID feature extraction, and number-plate OCR.
+          Upload surveillance footage, pin the camera location, and trace vehicles across cameras.
         </p>
 
         <div className="mt-8 flex flex-wrap gap-3">
@@ -346,6 +498,12 @@ function Hero() {
             ▶ START ANALYSIS
           </a>
           <Link
+            href="/trajectories"
+            className="flex items-center gap-2 rounded-xl border border-slate-700 bg-transparent px-5 py-2.5 font-mono text-sm text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
+          >
+            TRAJECTORIES →
+          </Link>
+          <Link
             href="/videos"
             className="flex items-center gap-2 rounded-xl border border-slate-700 bg-transparent px-5 py-2.5 font-mono text-sm text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
           >
@@ -354,7 +512,6 @@ function Hero() {
         </div>
       </div>
 
-      {/* Corner tag */}
       <div className="absolute right-6 top-6 font-mono text-[10px] tracking-widest text-slate-800 uppercase">
         v2.0 · FYP
       </div>
@@ -367,8 +524,8 @@ function HowItWorks() {
   const steps = [
     {
       num: "01",
-      title: "UPLOAD FOOTAGE",
-      desc: "Submit MP4, MOV, or any video format from surveillance or dashcam sources.",
+      title: "UPLOAD + PIN",
+      desc: "Submit MP4, MOV, or any video format. Drop a pin on the map to mark camera location.",
       color: "text-amber-400",
       border: "border-amber-500/20",
       bg: "bg-amber-500/5",
@@ -383,8 +540,8 @@ function HowItWorks() {
     },
     {
       num: "03",
-      title: "TRANSREID FEATURES",
-      desc: "ResNet50 + Transformer encoder extracts 512-dim identity embeddings per crop.",
+      title: "TRANSREID + PLATE",
+      desc: "ResNet50 + Transformer extracts identity embeddings. PlateNet reads number plates via OCR.",
       color: "text-violet-400",
       border: "border-violet-500/20",
       bg: "bg-violet-500/5",
@@ -392,7 +549,7 @@ function HowItWorks() {
     {
       num: "04",
       title: "TRAJECTORY MAP",
-      desc: "Cosine similarity clusters detections into unique identities. Tracks them across camera views.",
+      desc: "When same plate appears in 2+ videos, the system draws the road path between cameras.",
       color: "text-green-400",
       border: "border-green-500/20",
       bg: "bg-green-500/5",
@@ -425,7 +582,6 @@ export default function HomePage() {
   return (
     <div className="space-y-10">
       <Hero />
-      {/* <StatsBar /> */}
       <HowItWorks />
       <UploadSection />
       <RecentStrip />

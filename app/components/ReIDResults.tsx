@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, Fragment } from "react";
 import Link from "next/link";
 import { Card } from "./ui/Card";
 import { TrajectoryRoadMap, Waypoint } from "./TrajectoryRoadMap";
+import { FeaturePanel, FeatureStats, SimilarityNeighbor } from "./FeaturePanel";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -18,6 +19,8 @@ interface ReIDGroup {
   first_seen: number;
   last_seen: number;
   plate_number: string | null;
+  feature_stats?: FeatureStats;
+  similarity_to_others?: SimilarityNeighbor[];
 }
 
 interface CameraInfo {
@@ -82,16 +85,11 @@ function PlateBadge({ plate }: { plate: string | null }) {
   );
 }
 
-// ── Single-camera mini-map ────────────────────────────────────────────────────
-function SingleCameraMap({ camera }: { camera: CameraInfo }) {
-  const mapRef = (typeof window !== "undefined" ? require("react") : null)?.useRef?.<HTMLDivElement>(null);
-  return null; // we use TrajectoryRoadMap with one waypoint instead
-}
-
 export function ReIDResults({ jobId }: Props) {
   const [data, setData] = useState<ReIDData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [expandedVehicle, setExpandedVehicle] = useState<string | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/videos/${jobId}/reid`)
@@ -122,14 +120,10 @@ export function ReIDResults({ jobId }: Props) {
 
   const { reid_groups, trajectory, unique_vehicles, plates_detected, cross_video_matches, has_cross_video_match } = data;
 
-  // Build waypoints for the map
-  // - If cross-video matches exist, use them (full trajectory across cameras)
-  // - Otherwise, just show the single pinned camera location
   let mapWaypoints: Waypoint[] = [];
   let displayedPlate: string | undefined;
 
   if (has_cross_video_match) {
-    // Use the first plate's waypoints (could be enhanced with a selector)
     const firstPlate = Object.keys(cross_video_matches)[0];
     displayedPlate = firstPlate;
     mapWaypoints = (cross_video_matches[firstPlate] || []).map((w) => ({
@@ -141,7 +135,6 @@ export function ReIDResults({ jobId }: Props) {
         : null,
     }));
   } else if (trajectory?.camera_a) {
-    // Single camera — fake one waypoint
     mapWaypoints = [{
       video_id: jobId,
       title: trajectory.camera_a.name,
@@ -192,7 +185,7 @@ export function ReIDResults({ jobId }: Props) {
         ))}
       </div>
 
-      {/* ── Map: trajectory if cross-video, else single pin ── */}
+      {/* ── Map ── */}
       {mapWaypoints.length > 0 && (
         <Card title={
           has_cross_video_match
@@ -225,12 +218,13 @@ export function ReIDResults({ jobId }: Props) {
         </Card>
       )}
 
-      {/* ── Vehicle Groups Table ── */}
+      {/* ── Vehicle Groups Table — now with expandable rows ── */}
       <Card title={`Detected Vehicles (${reid_groups.length})`}>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-700 text-left text-xs text-slate-400">
+                <th className="pb-2 pr-2 w-8 font-medium"></th>
                 <th className="pb-2 pr-4 font-medium">Vehicle</th>
                 <th className="pb-2 pr-4 font-medium">Number Plate</th>
                 <th className="pb-2 pr-4 font-medium">Detections</th>
@@ -244,48 +238,96 @@ export function ReIDResults({ jobId }: Props) {
               {reid_groups.map((group) => {
                 const plate = group.plate_number;
                 const isCrossCamera = !!(plate && cross_video_matches?.[plate.toUpperCase().trim()]);
+                const isExpanded = expandedVehicle === group.vehicle_id;
+                const hasFeatureStats = !!group.feature_stats;
+
                 return (
-                  <tr key={group.vehicle_id} className="text-slate-300 hover:bg-slate-800/40 transition">
-                    <td className="py-2.5 pr-4">
-                      <span className="font-mono font-semibold text-indigo-300">{group.vehicle_id}</span>
-                    </td>
-                    <td className="py-2.5 pr-4">
-                      <PlateBadge plate={plate} />
-                    </td>
-                    <td className="py-2.5 pr-4 tabular-nums">{group.detection_count}</td>
-                    <td className="py-2.5 pr-4 tabular-nums text-slate-400">{formatTime(group.first_seen)}</td>
-                    <td className="py-2.5 pr-4 tabular-nums text-slate-400">{formatTime(group.last_seen)}</td>
-                    <td className="py-2.5 pr-4">
-                      <ScoreBadge score={group.best_score} />
-                    </td>
-                    <td className="py-2.5">
-                      {isCrossCamera ? (
-                        <Link
-                          href={`/trajectories?plate=${encodeURIComponent(plate!)}`}
-                          className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] text-emerald-300 ring-1 ring-emerald-500/20 hover:bg-emerald-500/30"
-                        >
-                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                          Cross-camera ↗
-                        </Link>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 rounded-full bg-slate-700 px-2 py-0.5 text-[11px] text-slate-400">
-                          Single camera
+                  <Fragment key={group.vehicle_id}>
+                    <tr
+                      onClick={() =>
+                        hasFeatureStats &&
+                        setExpandedVehicle(isExpanded ? null : group.vehicle_id)
+                      }
+                      className={`text-slate-300 transition ${
+                        hasFeatureStats
+                          ? "cursor-pointer hover:bg-slate-800/60"
+                          : "hover:bg-slate-800/40"
+                      } ${isExpanded ? "bg-slate-800/60" : ""}`}
+                    >
+                      <td className="py-2.5 pr-2 text-center">
+                        {hasFeatureStats && (
+                          <span
+                            className={`inline-block transition-transform ${
+                              isExpanded ? "rotate-90" : ""
+                            } text-slate-500`}
+                          >
+                            ▶
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 pr-4">
+                        <span className="font-mono font-semibold text-indigo-300">
+                          {group.vehicle_id}
                         </span>
-                      )}
-                    </td>
-                  </tr>
+                      </td>
+                      <td className="py-2.5 pr-4" onClick={(e) => e.stopPropagation()}>
+                        <PlateBadge plate={plate} />
+                      </td>
+                      <td className="py-2.5 pr-4 tabular-nums">{group.detection_count}</td>
+                      <td className="py-2.5 pr-4 tabular-nums text-slate-400">{formatTime(group.first_seen)}</td>
+                      <td className="py-2.5 pr-4 tabular-nums text-slate-400">{formatTime(group.last_seen)}</td>
+                      <td className="py-2.5 pr-4">
+                        <ScoreBadge score={group.best_score} />
+                      </td>
+                      <td className="py-2.5" onClick={(e) => e.stopPropagation()}>
+                        {isCrossCamera ? (
+                          <Link
+                            href={`/trajectories?plate=${encodeURIComponent(plate!)}`}
+                            className="inline-flex items-center gap-1 rounded-full bg-emerald-500/20 px-2 py-0.5 text-[11px] text-emerald-300 ring-1 ring-emerald-500/20 hover:bg-emerald-500/30"
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                            Cross-camera ↗
+                          </Link>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-slate-700 px-2 py-0.5 text-[11px] text-slate-400">
+                            Single camera
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                    {/* Expanded row: feature panel */}
+                    {isExpanded && group.feature_stats && (
+                      <tr key={`${group.vehicle_id}-features`}>
+                        <td colSpan={8} className="bg-slate-900/50 px-2 py-3">
+                          <FeaturePanel
+                            vehicleId={group.vehicle_id}
+                            stats={group.feature_stats}
+                            neighbors={group.similarity_to_others || []}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
           </table>
         </div>
 
-        {reid_groups.some((g) => g.plate_number) && (
-          <div className="mt-4 rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-400">
-            <span className="font-semibold">🪪 Plate-assisted Re-ID:</span> Click any plate to see its
-            cross-camera trajectory. Plates detected in 2+ videos automatically link to the trajectory map.
-          </div>
-        )}
+        <div className="mt-4 space-y-2">
+          {reid_groups.some((g) => g.feature_stats) && (
+            <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 px-3 py-2 text-xs text-indigo-300">
+              <span className="font-semibold">🧠 Click any row</span> to inspect the
+              512-dimensional feature vector extracted by TransReID for that vehicle.
+            </div>
+          )}
+          {reid_groups.some((g) => g.plate_number) && (
+            <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-3 py-2 text-xs text-cyan-400">
+              <span className="font-semibold">🪪 Plate-assisted Re-ID:</span> Click any plate to see its
+              cross-camera trajectory. Plates detected in 2+ videos automatically link to the trajectory map.
+            </div>
+          )}
+        </div>
       </Card>
     </div>
   );
